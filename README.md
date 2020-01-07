@@ -1,15 +1,6 @@
-# crime
 
-*add project short description*
 
-## Accessing the library
+###############Execute with a spark frim CLI############
 
-*How to access the code*
 
-## Documentation
-
-*A link to the documentation*
-
-## How to contribute
-
-*How others can contribute to the project*
+spark-submit --master local[*] --class org.brig.CrimeStats target/scala-2.11/crime-assembly-0.0.1.jar data/crime.csv data/offense_codes.csv data/out_fl
