@@ -1,9 +1,13 @@
 package org.brig
-
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql._
 import org.apache.spark.sql.functions._
 import scala.collection.mutable
 import org.apache.spark.sql.expressions._
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.functions.{lit, _}
+import org.apache.spark.sql.types._
+
 
 
 object CrimeStats extends App {
@@ -19,7 +23,6 @@ object CrimeStats extends App {
   val crime_file: String = args(0)
   val offense_file: String = args(1)
   val output: String = args(2)
-
 
   // Read Crime dataset, filter out Null District
   val crime: DataFrame = spark
@@ -52,9 +55,11 @@ object CrimeStats extends App {
 
   crime_total.show
 
+
   // median function
 
-  def median(inputList: List[Long]): Long = {
+
+  /* def median(inputList: List[Long]): Long = {
     val sortedList = inputList.sorted
     val count: Int = inputList.size
     if (count % 2 == 0) {
@@ -65,55 +70,52 @@ object CrimeStats extends App {
       sortedList(count / 2)
   }
 
-  // define UDF median and mkstring
+
+
+    // define UDF median and mkstring
   def medianUDF: UserDefinedFunction = udf((l: mutable.WrappedArray[Long]) => median(l.toList))
 
   def mkStringUDF: UserDefinedFunction = udf((l: mutable.WrappedArray[String]) => l.toList.mkString(", "))
 
+*/
   // total + month
 
-  val tbl1 = crime_total
-    .groupBy($"DISTRICT", $"MONTH")
-    .agg(count($"INCIDENT_NUMBER").alias("crimes_num"))
-    .groupBy($"DISTRICT")
-    .agg(sum($"crimes_num").alias("crimes_total"),
-      collect_list($"crimes_num").alias("month_list"))
-    .withColumn("crimes_monthly", medianUDF($"month_list"))
-    .drop($"month_list")
 
-  tbl1.show()
+  val crimes_by_monthly = crime
+      .groupBy("DISTRICT", "YEAR","MONTH")
+      .agg(count($"INCIDENT_NUMBER").alias("CRIMES_IN_MONTH"))
+      .groupBy("DISTRICT")
+      .agg(callUDF("percentile_approx", $"CRIMES_IN_MONTH", lit(0.5)).as("CRIMES_MONTHLY"))
+      .withColumnRenamed("DISTRICT", "DISTRICT_MONTHLY")
 
-  val window: WindowSpec = Window.partitionBy($"DISTRICT").orderBy($"crimes_num".desc)
+  crimes_by_monthly.show()
+
+
+  val window_district = Window.partitionBy("DISTRICT")
+
 
   // crime)types and crime_nums
-  val tbl2 = crime_total
-    .groupBy($"DISTRICT", $"crime_type")
-    .agg(count($"INCIDENT_NUMBER").alias("crimes_nums"))
-    .withColumn("rank", row_number().over(window))
-    .filter($"rank" < 4)
-    .drop($"rank")
-    .groupBy($"DISTRICT")
-    .agg(collect_list($"crime_type").alias("crime_type_list"))
-    .withColumn("frequent_crime_types", mkStringUDF($"crime_type_list"))
-    .drop($"crime_type_list")
+  val crimes_by_types = crime.join(broadcast(offense), crime("OFFENSE_CODE") === offense("CODE"))
+    .groupBy("DISTRICT", "NAME")
+    .agg(count($"NAME").alias("NAME_DESC"))
+    .withColumn("rank", row_number().over(window_district.orderBy(desc("NAME_DESC"))))
+    .where("rank <= 3")
+    .groupBy("DISTRICT")
+    .agg(collect_list("NAME").alias("FREQ_CRIME_TYPES"))
+    .withColumnRenamed("DISTRICT", "DISTRICT_BY_TYPES")
 
-  tbl2.show()
-
-  // lat and lng
-
-  val tbl3 = crime_total
-    .groupBy($"DISTRICT")
-    .agg(mean($"Lat").alias("lat"), mean($"Long").alias("lng"))
+  crimes_by_types.show()
 
 
   // Join and save to output
-  val result: DataFrame = tbl1
-    .join(tbl2, Seq("DISTRICT"))
-    .join(tbl3, Seq("DISTRICT"))
+  val result = crime_total
+    .join(crimes_by_monthly, crime_total("DISTRICT") === crimes_by_monthly("district_monthly"),"left_outer")
+    .join(crimes_by_types, crime_total("DISTRICT") === crimes_by_types("district_name_by_list"),"left_outer")
+    .select("DISTRICT", "CRIMES_MONTHLY", "FREQ_CRIME_TYPES", "Lat", "Long")
+    .orderBy("DISTRICT")
+    .repartition(1)
+    .write.format("parquet").mode(SaveMode.Overwrite).save(output)
 
-  result.show(20)
-
-  result.repartition(1).write.parquet(output)
 
   val ss = spark.read.parquet(output).show(20)
 
@@ -123,8 +125,4 @@ object CrimeStats extends App {
 
 
 //spark-submit --master local[*] --class org.brig.CrimeStats target/scala-2.11/crime-assembly-0.0.1.jar data/crime.csv data/offense_codes.csv data/out_fl
-
-
-
-
 
